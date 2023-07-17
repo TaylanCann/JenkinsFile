@@ -1,0 +1,209 @@
+#!/usr/bin/env groovy
+@Library('PipelineExternalLib') _
+def config;
+
+node(){
+    configFileProvider([configFile(fileId: 'onent-jenkins-config', targetLocation: 'config')]) {
+        config = readJSON file: 'config'
+        echo " =========== ^^^^^^^^^^^^ Reading config from pipeline script "
+        echo "${config.appServiceName}"
+        echo "${config.projectName}"
+        echo "${config.devApprovers}"
+        echo "${config.email}"
+        echo " =========== ~~~~~~~~~~~~ ============ "
+    }
+}
+
+pipeline {
+  agent { 
+    label 'NS_Windows_Agent' 
+  }
+  
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+    disableConcurrentBuilds()
+  }
+
+  environment {
+    appServiceId = "appServiceId"
+    appServiceName = "${config.appServiceName}"
+    projectName = "${config.projectName}"
+    softwareModuleName = "spapg-api"
+    sonarProjectKey = "${appServiceId}_${appServiceName.toUpperCase()}.${softwareModuleName}"
+    FORTIFY_APP_NAME = "${appServiceId}_${appServiceName.toUpperCase()}.${softwareModuleName}"
+    solutionFolder="SPA"
+    projectFolder="${projectName}.${solutionFolder}"
+    solution="${projectFolder}.sln"
+    zipName="${softwareModuleName}.zip"
+    appVersion = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
+    artifactoryRepoPath = "local-generic-dist-prod/com/companyName/${appServiceName}/${softwareModuleName}/${appVersion}"
+    nugetRegistryAddress = "https://artifactory.companyName.com.tr/artifactory/api/nuget/nuget" 
+    batchNugetCommand="NuGet.exe restore ${solution} -Source ${nugetRegistryAddress} -ConfigFile .nuget/NuGet.Config"
+    batchNugetToolClean="\"${tool 'MsBuild 15.0'}\" ${solution} /nologo /nr:false /t:\"Clean\""
+    batchNugetTool="\"${tool 'MsBuild 15.0'}\" ${solution} /p:Configuration=Release /p:Platform=\"Any CPU\" /p:ProductVersion=1.0.0.${env.BUILD_NUMBER}" 
+    batchNpmInstall="npm install --registry=https://artifactory.companyName.com.tr/artifactory/api/npm/virtual-npm/"
+    batchGrunt="%USERPROFILE%\\AppData\\Roaming\\npm\\grunt.cmd production"
+    mainBranch ="${env.BRANCH_NAME}"
+    exclusionsTYPE = "NPM"
+  }
+
+  parameters {
+    string(name:'issueKey', 				defaultValue:params.issueKey  				?: '')
+    string(name:'sendUser', 				defaultValue:params.sendUser  				?: '')
+    string(name:'releaseVersion', 			defaultValue:params.releaseVersion  		?: '1.0.0')
+    string(name:'SUCCESS_EMAIL', 			defaultValue:params.SUCCESS_EMAIL  			?: config.email)										
+    string(name:'FAILURE_EMAIL', 			defaultValue:params.FAILURE_EMAIL  			?: config.email)		
+  }
+
+  stages {
+    stage('init & checkout') {
+      steps {
+        script {
+          bat "echo you are on the Initialization and Checkout step."
+        }
+      }
+    }
+
+   stage('Continuous Integration') { 
+    stages {
+        stage('build') {
+          steps{
+            script {
+              bat "${batchNugetCommand}"
+              bat "${batchNugetToolClean}"
+              bat "${batchNugetTool}"
+              bat "${batchNpmInstall}"
+              bat "${batchGrunt}"
+            }
+          }
+        }
+		
+
+      stage('code security') {
+          when{
+            anyOf{
+              branch "release_pg"
+              branch "release"
+            }
+          }
+          steps{
+            script {
+                 withCredentials([string(credentialsId: 'fortify-ssc-uptoken', variable: 'ssctoken'), string(credentialsId: 'fortify-ssc-uptoken', variable: 'uptoken')]) {
+                   bat "E:\\Jenkins\\tools\\com.cloudbees.jenkins.plugins.customtools.CustomTool\\fortify-scanner\\bin\\scancentral.bat -sscurl http://10.214.98.185:8080/ssc -ssctoken ${ssctoken} start -bt msbuild -bf ${solution} -upload -application ${FORTIFY_APP_NAME} -version ${mainBranch} -uptoken ${uptoken}"
+              }
+            }
+          }
+        }
+
+  
+
+        stage('publish artifact') {					
+          when{   
+            anyOf {
+			        branch "release_pg"
+              branch "releasable"
+              branch "release"
+              branch "dev"
+              branch "dev_pg"
+              branch "develop"
+              branch "develop_pg"
+            }
+          }					
+          steps{
+            script {
+              powershell "Compress-Archive -Path 'build\\*' -CompressionLevel Fastest -DestinationPath '${zipName}'"
+              if (env.BRANCH_NAME == 'release_pg' || env.BRANCH_NAME == 'release') {
+                genericLibrary.v3uploadArtifact(env, "${zipName}", "${artifactoryRepoPath}/${projectName}.${solutionFolder}.zip")
+              }
+            }
+          }
+        }		
+      } 
+    }
+
+stage('BlackDuck Scan') {
+          when{
+            anyOf{
+                branch "release_pg"
+                branch "release"
+            }
+          }
+            steps{
+                script {
+                    devopsLibrary.blackduckWithMSBuild(exclusionsTYPE)
+                }
+            }
+        }
+
+    stage('deploy') {
+      when{   
+        anyOf {
+		   branch "release_pg"
+           branch "release"
+           branch "dev"
+           branch "dev_pg"
+           branch "develop"
+           branch "develop_pg"
+        }
+      }
+      steps {
+        script {
+          withCredentials([ usernamePassword(credentialsId: 'companyName', usernameVariable: 'username', passwordVariable: 'password') ]) {
+            globalUsername=username
+            globalPassword=password
+        }
+        if (env.BRANCH_NAME == 'dev_pg' || env.BRANCH_NAME == 'dev') {
+            powershell "deployment\\deployment.ps1 ONENTDEV1 ${projectName} ${globalUsername} ${globalPassword} ${zipName} DevOneNT"
+            powershell "deployment\\deployment.ps1 ONENTDEV2 ${projectName} ${globalUsername} ${globalPassword} ${zipName} DevOneNT"
+            powershell "deployment\\deployment.ps1 ONENTDEV3 ${projectName} ${globalUsername} ${globalPassword} ${zipName} DevOneNT"
+			
+        }
+        else if(env.BRANCH_NAME == 'develop_pg' || env.BRANCH_NAME == 'develop_pg' || env.BRANCH_NAME == 'release_pg' || env.BRANCH_NAME == 'release' ) {
+                 powershell "deployment\\deployment.ps1 ONENTTEST1 ${projectName} ${globalUsername} ${globalPassword} ${zipName} TestOneNT"
+            powershell "deployment\\deployment.ps1 ONENTTEST2 ${projectName} ${globalUsername} ${globalPassword} ${zipName} TestOneNT"
+            powershell "deployment\\deployment.ps1 ONENTTEST3 ${projectName} ${globalUsername} ${globalPassword} ${zipName} TestOneNT"
+        } 
+       }
+      } 
+    }
+  }
+    
+  post {
+    always {
+      echo "this step executing ALWAYS"
+      script{
+          mailBody = ""
+      }
+    }
+    success {
+      script{        
+        print("build success")
+        mailBody+="<p style='color:green;'>Everything is done. Version: <a href='${env.BUILD_URL}/console'>${appVersion}</a> </p>"
+      }            
+      mail    to: params.SUCCESS_EMAIL,
+              mimeType: 'text/html',
+              subject: "Pipeline Finished Successfully: ${currentBuild.fullDisplayName}",
+              body: mailBody
+      echo "this step executing SUCCESS"
+    }
+    failure {
+      echo "this step executing CLEANUP"
+      script {
+        powershell "Remove-Item ${zipName} -Force"
+        mailBody+="<p style='color:red;'>Something is wrong with <a href='${env.BUILD_URL}/console'>${appVersion}</a> </p>"
+      }
+      mail    to: params.FAILURE_EMAIL,
+              mimeType: 'text/html',
+              subject: "Failed Pipeline: ${currentBuild.fullDisplayName}",
+              body: mailBody
+    }
+    cleanup {
+      echo "this step executing CLEANUP"
+      script {
+        powershell "Remove-Item ${zipName} -Force"
+      }
+    }       
+  }
+}
+  
