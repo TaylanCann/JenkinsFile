@@ -18,7 +18,7 @@ pipeline {
   agent { 
     label 'NS_Windows_Agent' 
   }
-  
+
   options {
     timestamps()
     buildDiscarder(logRotator(numToKeepStr: '30'))
@@ -26,24 +26,33 @@ pipeline {
   }
 
   environment {
-    appServiceId = "appServiceId"
-    appServiceName = "${config.appServiceName}"
+    appServiceId = "291521" ////mobilkurulum
+    appServiceName = "${config.appServiceName}" 	
     projectName = "${config.projectName}"
-    softwareModuleName = "spapg-api"
+    softwareModuleName = "reportingservicespg-api"
+    softwareModuleName_artifact = "${config.projectName}-service"
     sonarProjectKey = "${appServiceId}_${appServiceName.toUpperCase()}.${softwareModuleName}"
     FORTIFY_APP_NAME = "${appServiceId}_${appServiceName.toUpperCase()}.${softwareModuleName}"
-    solutionFolder="SPA"
-    projectFolder="${projectName}.${solutionFolder}"
-    solution="${projectFolder}.sln"
-    zipName="${softwareModuleName}.zip"
-    appVersion = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
-    artifactoryRepoPath = "local-generic-dist-prod/com/companyName/${appServiceName}/${softwareModuleName}/${appVersion}"
-    nugetRegistryAddress = "https://artifactory.companyName.com.tr/artifactory/api/nuget/nuget" 
-    batchNugetCommand="NuGet.exe restore ${solution} -Source ${nugetRegistryAddress} -ConfigFile .nuget/NuGet.Config"
-    batchNugetToolClean="\"${tool 'MsBuild 15.0'}\" ${solution} /nologo /nr:false /t:\"Clean\""
-    batchNugetTool="\"${tool 'MsBuild 15.0'}\" ${solution} /p:Configuration=Release /p:Platform=\"Any CPU\" /p:ProductVersion=1.0.0.${env.BUILD_NUMBER}" 
-    batchNpmInstall="npm install --registry=https://artifactory.companyName.com.tr/artifactory/api/npm/virtual-npm/"
-    batchGrunt="%USERPROFILE%\\AppData\\Roaming\\npm\\grunt.cmd production"
+    serviceName = "Reporting"
+    servicesString="Services"
+    serviceString="Service"
+    appPublish ="app.publish"
+    serviceFolder="${projectName}.${servicesString}.WindowsService"
+    serviceReportingFolder="${projectName}.${servicesString}.${serviceName}${servicesString}"
+    solution="${servicesString}/${projectName}${serviceName}.sln"
+    solutionFolder="${servicesString}"
+    zipName="${projectName}-${serviceName}Service.zip"
+    zipAppName="${projectName}-${serviceName}ServiceApp.zip"
+		appVersion = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
+    artifactoryRepoPath = "local-generic-dist-prod/com/companyName/${appServiceName}/${softwareModuleName_artifact}/${appVersion}"        
+    nugetRegistryAddress = "https://artifactory.companyName.com.tr/artifactory/api/nuget/nuget"
+    batchNugetCommand="NuGet.exe restore ${solution} -Source ${nugetRegistryAddress} -ConfigFile ${servicesString}/.nuget/NuGet.Config"
+     batchNugetTool="\"${tool 'MsBuild 15.0'}\" ${solution} /p:Configuration=Release /p:Platform=\"Any CPU\" /p:ProductVersion=1.0.0.${env.BUILD_NUMBER} /restore /p:nuget-source=${nugetRegistryAddress} /p:RestoreAdditionalProjectSources=${nugetRegistryAddress} /p:RestoreConfigFile=${solutionFolder}/.nuget/NuGet.Config"
+    powershellCopyExe = "Copy-Item '${serviceFolder}\\bin\\Debug\\${serviceFolder}.exe' '${serviceReportingFolder}\\bin\\Debug\\${serviceReportingFolder}.WindowsServiceHost.exe'"
+    powershellCopyPdb = "Copy-Item '${serviceFolder}\\bin\\Debug\\${serviceFolder}.pdb' '${serviceReportingFolder}\\bin\\Debug\\${serviceReportingFolder}.WindowsServiceHost.pdb'"
+    powershellCopyDllConfig = "Copy-Item '${serviceFolder}\\bin\\Debug\\${serviceReportingFolder}.dll.config' '${serviceReportingFolder}\\bin\\Debug\\${serviceReportingFolder}.WindowsServiceHost.exe.config'"
+    powershellCopyCompress =  "Compress-Archive -Path '${serviceReportingFolder}\\bin\\Debug\\*' -CompressionLevel Fastest -DestinationPath '${zipName}'"      
+    powershellCopyAppCompress =  "Compress-Archive -Path '${serviceReportingFolder}\\bin\\Debug\\${serviceReportingFolder}.WindowsServiceHost.exe' -CompressionLevel Fastest -DestinationPath '${zipAppName}'"   
     mainBranch ="${env.BRANCH_NAME}"
     exclusionsTYPE = "NPM"
   }
@@ -52,8 +61,8 @@ pipeline {
     string(name:'issueKey', 				defaultValue:params.issueKey  				?: '')
     string(name:'sendUser', 				defaultValue:params.sendUser  				?: '')
     string(name:'releaseVersion', 			defaultValue:params.releaseVersion  		?: '1.0.0')
-    string(name:'SUCCESS_EMAIL', 			defaultValue:params.SUCCESS_EMAIL  			?: config.email)										
-    string(name:'FAILURE_EMAIL', 			defaultValue:params.FAILURE_EMAIL  			?: config.email)		
+    string(name:'SUCCESS_EMAIL', 			defaultValue:params.SUCCESS_EMAIL  			?: config.email)  // Degistir											
+    string(name:'FAILURE_EMAIL', 			defaultValue:params.FAILURE_EMAIL  			?: config.email)  // Degistir
   }
 
   stages {
@@ -65,68 +74,59 @@ pipeline {
       }
     }
 
-   stage('Continuous Integration') { 
+    stage('Continuous Integration') {
     stages {
         stage('build') {
-          steps{
+        steps{
             script {
-              bat "${batchNugetCommand}"
-              bat "${batchNugetToolClean}"
+              bat "${batchNugetCommand}" 
               bat "${batchNugetTool}"
-              bat "${batchNpmInstall}"
-              bat "${batchGrunt}"
             }
           }
         }
-		
+      
 
-      stage('code security') {
+        stage('Code Quality') {
           when{
             anyOf{
               branch "release_pg"
-              branch "release"
             }
           }
+
+          steps{
+            script{
+              withSonarQubeEnv(credentialsId: 'sonar-gens', installationName: 'sonar-gens'){
+                  bat "E:\\Jenkins\\tools\\hudson.plugins.sonar.MsBuildSQRunnerInstallation\\msbuild-sonar\\SonarScanner.MSBuild.exe begin /key:${sonarProjectKey}"
+                bat "${batchNugetCommand}"
+                bat "${batchNugetTool}"
+                bat "E:\\Jenkins\\tools\\hudson.plugins.sonar.MsBuildSQRunnerInstallation\\msbuild-sonar\\SonarScanner.MSBuild.exe end"
+                    }
+                }
+            }
+        }
+
+        stage('code security') {
+          when{
+            anyOf{
+              branch "release_pg"
+              branch "develop_pg"
+            }
+          }
+
           steps{
             script {
-                 withCredentials([string(credentialsId: 'fortify-ssc-uptoken', variable: 'ssctoken'), string(credentialsId: 'fortify-ssc-uptoken', variable: 'uptoken')]) {
-                   bat "E:\\Jenkins\\tools\\com.cloudbees.jenkins.plugins.customtools.CustomTool\\fortify-scanner\\bin\\scancentral.bat -sscurl http://10.214.98.185:8080/ssc -ssctoken ${ssctoken} start -bt msbuild -bf ${solution} -upload -application ${FORTIFY_APP_NAME} -version ${mainBranch} -uptoken ${uptoken}"
+                withCredentials([string(credentialsId: 'fortify-ssc-uptoken', variable: 'ssctoken'), string(credentialsId: 'fortify-ssc-uptoken', variable: 'uptoken')]) {
+                  bat "E:\\Jenkins\\tools\\com.cloudbees.jenkins.plugins.customtools.CustomTool\\fortify-scanner\\bin\\scancentral.bat -sscurl http://10.214.98.185:8080/ssc -ssctoken ${ssctoken} start -bt msbuild -bf ${solution} -upload -application ${FORTIFY_APP_NAME} -version ${mainBranch} -uptoken ${uptoken}"                   
               }
             }
           }
         }
+	
 
-  
-
-        stage('publish artifact') {					
-          when{   
-            anyOf {
-			        branch "release_pg"
-              branch "releasable"
-              branch "release"
-              branch "dev"
-              branch "dev_pg"
-              branch "develop"
-              branch "develop_pg"
-            }
-          }					
-          steps{
-            script {
-              powershell "Compress-Archive -Path 'build\\*' -CompressionLevel Fastest -DestinationPath '${zipName}'"
-              if (env.BRANCH_NAME == 'release_pg' || env.BRANCH_NAME == 'release') {
-                genericLibrary.v3uploadArtifact(env, "${zipName}", "${artifactoryRepoPath}/${projectName}.${solutionFolder}.zip")
-              }
-            }
-          }
-        }		
-      } 
-    }
-
-stage('BlackDuck Scan') {
+  stage('BlackDuck Scan') {
           when{
             anyOf{
                 branch "release_pg"
-                branch "release"
             }
           }
             steps{
@@ -136,39 +136,101 @@ stage('BlackDuck Scan') {
             }
         }
 
-    stage('deploy') {
+        stage('publish dev/develop artifact') {
+        when {   
+            anyOf {
+              branch "dev_pg"
+              branch "develop_pg"
+            }
+          }			
+          steps{
+            script {
+              dir("${servicesString}"){
+                powershell "${powershellCopyExe}"
+                powershell "${powershellCopyPdb}"
+                powershell "${powershellCopyDllConfig}"
+                powershell "${powershellCopyCompress}"
+                powershell "${powershellCopyAppCompress}"
+              }
+            }
+          }
+        }
+
+        stage('publish release artifact') {
+          when{   
+            anyOf {
+              branch "release_pg"
+              branch "releasable"
+              branch "release"
+              branch "hotfix"
+              branch "hotfix/*"
+            }
+          }			
+          steps{
+            script {
+              dir("${servicesString}"){
+                powershell "${powershellCopyExe}"
+                powershell "${powershellCopyPdb}"
+                powershell "${powershellCopyCompress}"
+                genericLibrary.v3uploadArtifact(env, "${zipName}", "${artifactoryRepoPath}/${projectName}${serviceName}${serviceString}.zip")
+                powershell "${powershellCopyAppCompress}"
+                genericLibrary.v3uploadArtifact(env, "${zipAppName}", "${artifactoryRepoPath}/${projectName}${serviceName}${serviceString}${appPublish}.zip")
+                powershell "Remove-Item ${zipAppName} -Force"
+              }
+            }
+          }
+        }
+      }  
+    }
+
+    stage('deploy to dev') {
+      options { 
+        timeout(time: 15, unit: 'MINUTES') 
+      }			
       when{   
         anyOf {
-		   branch "release_pg"
-           branch "release"
-           branch "dev"
-           branch "dev_pg"
-           branch "develop"
-           branch "develop_pg"
+          branch "dev_pg"
         }
       }
       steps {
         script {
-          withCredentials([ usernamePassword(credentialsId: 'companyName', usernameVariable: 'username', passwordVariable: 'password') ]) {
-            globalUsername=username
-            globalPassword=password
-        }
-        if (env.BRANCH_NAME == 'dev_pg' || env.BRANCH_NAME == 'dev') {
+          dir("${servicesString}"){
+            withCredentials([ usernamePassword(credentialsId: 'CompanyName-nems', usernameVariable: 'username', passwordVariable: 'password') ]) {
+                globalUsername=username
+                globalPassword=password
+            }
+
             powershell "deployment\\deployment.ps1 ONENTDEV1 ${projectName} ${globalUsername} ${globalPassword} ${zipName} DevOneNT"
-            powershell "deployment\\deployment.ps1 ONENTDEV2 ${projectName} ${globalUsername} ${globalPassword} ${zipName} DevOneNT"
-            powershell "deployment\\deployment.ps1 ONENTDEV3 ${projectName} ${globalUsername} ${globalPassword} ${zipName} DevOneNT"
-			
+          }     
         }
-        else if(env.BRANCH_NAME == 'develop_pg' || env.BRANCH_NAME == 'develop_pg' || env.BRANCH_NAME == 'release_pg' || env.BRANCH_NAME == 'release' ) {
-                 powershell "deployment\\deployment.ps1 ONENTTEST1 ${projectName} ${globalUsername} ${globalPassword} ${zipName} TestOneNT"
-            powershell "deployment\\deployment.ps1 ONENTTEST2 ${projectName} ${globalUsername} ${globalPassword} ${zipName} TestOneNT"
-            powershell "deployment\\deployment.ps1 ONENTTEST3 ${projectName} ${globalUsername} ${globalPassword} ${zipName} TestOneNT"
-        } 
-       }
-      } 
+      }
+    }
+
+    stage('deploy to test') {
+      options { 
+        timeout(time: 15, unit: 'MINUTES') 
+      }			
+      when{   
+        anyOf {
+          branch "develop_pg"
+          branch "release_pg"
+        }
+      }
+      steps {
+        script {
+          dir("${servicesString}"){
+            withCredentials([ usernamePassword(credentialsId: 'CompanyName-nems', usernameVariable: 'username', passwordVariable: 'password') ]) {
+                globalUsername=username
+                globalPassword=password
+            }
+
+            powershell "deployment\\deployment.ps1 ONENTTEST1 ${projectName} ${globalUsername} ${globalPassword} ${zipName} TestOneNT"
+          }     
+        }
+      }
     }
   }
-    
+
   post {
     always {
       echo "this step executing ALWAYS"
@@ -188,9 +250,11 @@ stage('BlackDuck Scan') {
       echo "this step executing SUCCESS"
     }
     failure {
-      echo "this step executing CLEANUP"
-      script {
-        powershell "Remove-Item ${zipName} -Force"
+      echo "this step executing FAILURE"
+      script{
+        dir("${servicesString}"){
+          powershell "Remove-Item ${zipName} -Force"
+        }
         mailBody+="<p style='color:red;'>Something is wrong with <a href='${env.BUILD_URL}/console'>${appVersion}</a> </p>"
       }
       mail    to: params.FAILURE_EMAIL,
@@ -200,10 +264,11 @@ stage('BlackDuck Scan') {
     }
     cleanup {
       echo "this step executing CLEANUP"
-      script {
-        powershell "Remove-Item ${zipName} -Force"
+      script{
+        dir("${servicesString}"){
+          powershell "Remove-Item ${zipName} -Force"
+        }
       }
-    }       
+    }
   }
 }
-  
